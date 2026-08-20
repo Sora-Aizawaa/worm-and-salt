@@ -81,7 +81,7 @@ class _GameScreenState extends State<GameScreen>
   List<Offset> _wormBody = [];
   final double _wormRadius = 14.0;
   final double _segmentSpacing = 17.0;
-  final int _initialLength = 14;
+  final int _initialLength = 4;  // Worm starts short
   double _wormSpeed = 200.0;
   Offset? _dragTarget;
 
@@ -287,8 +287,13 @@ class _GameScreenState extends State<GameScreen>
           // Speed boost!
           _wormSpeed += 15;
           _score += 5;
+          // Grow worm — add 4 segments at the tail
+          final tail = _wormBody.last;
+          for (int g = 1; g <= 4; g++) {
+            _wormBody.add(tail);
+          }
           _addFloatingText(
-              _wormBody[0], '🚀 SPEED UP! +5 pts', Colors.greenAccent);
+              _wormBody[0], '🐛 WORM GROWS! +5 pts', Colors.greenAccent);
           HapticFeedback.lightImpact();
           continue;
         }
