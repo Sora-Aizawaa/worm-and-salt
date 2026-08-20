@@ -16,12 +16,45 @@ class WormVsSaltGame extends StatelessWidget {
       title: 'Worm vs Salt',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: Colors.brown[900], // Dark dirt color
+        scaffoldBackgroundColor: const Color(0xFF1A0A00),
       ),
       home: const GameScreen(),
     );
   }
 }
+
+// ───────────────────── Entities ─────────────────────
+
+class Salt {
+  Offset position;
+  Offset velocity;
+  final double radius;
+  Salt({required this.position, required this.velocity, required this.radius});
+}
+
+class HealthItem {
+  Offset position;
+  final double radius;
+  double lifeTime = 0;
+  HealthItem({required this.position, required this.radius});
+}
+
+class FloatingText {
+  String text;
+  Offset position;
+  double opacity;
+  double age;
+  Color color;
+  FloatingText({
+    required this.text,
+    required this.position,
+    this.opacity = 1.0,
+    this.age = 0,
+    this.color = Colors.redAccent,
+  });
+}
+
+// ───────────────────── Game Screen ─────────────────────
 
 class GameScreen extends StatefulWidget {
   const GameScreen({super.key});
@@ -30,63 +63,87 @@ class GameScreen extends StatefulWidget {
   State<GameScreen> createState() => _GameScreenState();
 }
 
-enum Direction { up, down, left, right }
-
-class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateMixin {
+class _GameScreenState extends State<GameScreen>
+    with TickerProviderStateMixin {
   late Ticker _ticker;
   final Random _random = Random();
+  Size _screenSize = Size.zero;
 
   bool _isPlaying = false;
   bool _isGameOver = false;
-  Size _screenSize = Size.zero;
+  bool _showReward = false;
 
-  // Game state
+  // Stats
   double _health = 100.0;
-  
-  // Worm State (Multi-segment)
+  int _score = 0;
+
+  // Worm
   List<Offset> _wormBody = [];
-  final double _wormRadius = 15.0;
-  final double _segmentSpacing = 18.0;
-  final int _initialLength = 12;
-  Direction _currentDirection = Direction.right;
-  final double _wormSpeed = 220.0; // pixels per second
-  
+  final double _wormRadius = 14.0;
+  final double _segmentSpacing = 17.0;
+  final int _initialLength = 14;
+  double _wormSpeed = 200.0;
+  Offset? _dragTarget;
+
+  // Enemies & Items
   List<Salt> _salts = [];
   List<HealthItem> _items = [];
+  List<FloatingText> _floatingTexts = [];
 
-  // Difficulty & Timing
+  // Timing
   Duration _lastTick = Duration.zero;
-  Duration _timeElapsed = Duration.zero;
-  
   double _spawnTimer = 0;
-  double _spawnRate = 1.5; 
+  double _spawnRate = 1.5;
   double _itemSpawnTimer = 0;
+  double _scoreTimer = 0;
+
+  // Hit messages
+  final List<String> _hitMessages = [
+    'IT HURTS! 😱',
+    'OUCH! 🤕',
+    'NOT THE SALT! 😭',
+    'AAAAHHH! 🔥',
+    'THAT STINGS! 💀',
+    'OH NO! 😖',
+    'STOP IT! 😤',
+    'THE BURN! 🌶️',
+    'WHY?! 😩',
+    'I\'M MELTING! 😰',
+  ];
+
+  // Reward animation controller
+  late AnimationController _showerController;
+  late Animation<double> _dropAnimation;
 
   @override
   void initState() {
     super.initState();
     _ticker = createTicker(_tick);
+
+    _showerController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    )..repeat();
+    _dropAnimation = Tween<double>(begin: 0, end: 1).animate(_showerController);
   }
 
   void _startGame() {
     setState(() {
       _isPlaying = true;
       _isGameOver = false;
+      _showReward = false;
       _health = 100.0;
-      
-      // Initialize worm body in the center
-      double startX = _screenSize.width / 2;
-      double startY = _screenSize.height / 2;
+      _score = 0;
+      _wormSpeed = 200.0;
+      final cx = _screenSize.width / 2;
+      final cy = _screenSize.height / 2;
       _wormBody = List.generate(
-        _initialLength, 
-        (index) => Offset(startX - (index * _segmentSpacing), startY)
-      );
-      _currentDirection = Direction.right;
-
+          _initialLength, (i) => Offset(cx - i * _segmentSpacing, cy));
+      _dragTarget = Offset(cx, cy);
       _salts.clear();
       _items.clear();
+      _floatingTexts.clear();
       _lastTick = Duration.zero;
-      _timeElapsed = Duration.zero;
       _spawnRate = 1.5;
     });
     _ticker.start();
@@ -100,14 +157,20 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
     });
   }
 
-  void _setDirection(Direction newDir) {
-    // Prevent 180-degree instant turns to avoid head going into body
-    if (_currentDirection == Direction.up && newDir == Direction.down) return;
-    if (_currentDirection == Direction.down && newDir == Direction.up) return;
-    if (_currentDirection == Direction.left && newDir == Direction.right) return;
-    if (_currentDirection == Direction.right && newDir == Direction.left) return;
-    
-    _currentDirection = newDir;
+  void _triggerReward() {
+    _ticker.stop();
+    setState(() {
+      _isPlaying = false;
+      _showReward = true;
+    });
+  }
+
+  void _addFloatingText(Offset pos, String msg, Color color) {
+    _floatingTexts.add(FloatingText(
+      text: msg,
+      position: pos + Offset(_random.nextDouble() * 40 - 20, -30),
+      color: color,
+    ));
   }
 
   void _tick(Duration elapsed) {
@@ -115,75 +178,88 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
       _lastTick = elapsed;
       return;
     }
-    double dt = (elapsed - _lastTick).inMicroseconds / 1000000.0;
+    final dt = (elapsed - _lastTick).inMicroseconds / 1000000.0;
     _lastTick = elapsed;
-    _timeElapsed += (elapsed - _lastTick);
 
     setState(() {
-      // 1. Move Worm Head
-      Offset moveDelta;
-      switch(_currentDirection) {
-        case Direction.up: moveDelta = Offset(0, -_wormSpeed * dt); break;
-        case Direction.down: moveDelta = Offset(0, _wormSpeed * dt); break;
-        case Direction.left: moveDelta = Offset(-_wormSpeed * dt, 0); break;
-        case Direction.right: moveDelta = Offset(_wormSpeed * dt, 0); break;
+      // Score increases over time
+      _scoreTimer += dt;
+      if (_scoreTimer >= 1.0) {
+        _scoreTimer = 0;
+        _score += 1;
+        if (_score >= 100) {
+          _triggerReward();
+          return;
+        }
       }
-      _wormBody[0] += moveDelta;
 
-      // Clamp head to screen boundaries
-      _wormBody[0] = Offset(
-        _wormBody[0].dx.clamp(_wormRadius, _screenSize.width - _wormRadius),
-        _wormBody[0].dy.clamp(_wormRadius, _screenSize.height - _wormRadius)
-      );
+      // Difficulty every 15s
+      final diffLevel = elapsed.inSeconds ~/ 15;
+      _spawnRate = 1.5 + diffLevel * 0.8;
 
-      // 2. Update Worm Body using Inverse Kinematics
+      // Move worm head toward drag target
+      if (_dragTarget != null && _wormBody.isNotEmpty) {
+        final head = _wormBody[0];
+        final diff = _dragTarget! - head;
+        final dist = diff.distance;
+        if (dist > 5) {
+          final dir = diff / dist;
+          _wormBody[0] = head + dir * (_wormSpeed * dt);
+        }
+        // Clamp to screen
+        _wormBody[0] = Offset(
+          _wormBody[0].dx.clamp(_wormRadius, _screenSize.width - _wormRadius),
+          _wormBody[0].dy.clamp(_wormRadius, _screenSize.height - _wormRadius),
+        );
+      }
+
+      // Update body segments (inverse kinematics)
       for (int i = 1; i < _wormBody.length; i++) {
-        Offset target = _wormBody[i - 1];
-        Offset current = _wormBody[i];
-        double dist = (target - current).distance;
+        final target = _wormBody[i - 1];
+        final current = _wormBody[i];
+        final dist = (target - current).distance;
         if (dist > _segmentSpacing) {
-          Offset dir = (target - current) / dist;
+          final dir = (target - current) / dist;
           _wormBody[i] = target - dir * _segmentSpacing;
         }
       }
 
-      // 3. Difficulty scaling (every 15 seconds)
-      int difficultyLevel = _lastTick.inSeconds ~/ 15;
-      _spawnRate = 1.5 + (difficultyLevel * 0.8);
-
-      // 4. Spawn Salts
+      // Spawn salt
       _spawnTimer += dt;
-      if (_spawnTimer > (1.0 / _spawnRate)) {
+      if (_spawnTimer > 1.0 / _spawnRate) {
         _spawnTimer = 0;
         _spawnSalt();
       }
 
-      // 5. Spawn Health Items
+      // Spawn item
       _itemSpawnTimer += dt;
-      if (_itemSpawnTimer > 8.0) {
+      if (_itemSpawnTimer > 7.0) {
         _itemSpawnTimer = 0;
         _spawnItem();
       }
 
-      // 6. Update Salts and Check Collisions
+      // Update salts
       for (int i = _salts.length - 1; i >= 0; i--) {
-        Salt s = _salts[i];
+        final s = _salts[i];
         s.position += s.velocity * dt;
 
-        // Check collision with ANY part of the worm body
-        bool hitWorm = false;
-        for (Offset segment in _wormBody) {
-          if ((s.position - segment).distance < _wormRadius + s.radius - 2) {
-            hitWorm = true;
+        bool hit = false;
+        for (final seg in _wormBody) {
+          if ((s.position - seg).distance < _wormRadius + s.radius - 2) {
+            hit = true;
             break;
           }
         }
 
-        if (hitWorm) {
-          // Vibrate on mobile as hit feedback; no-op on web
-          HapticFeedback.heavyImpact();
+        if (hit) {
           _salts.removeAt(i);
-          _health -= 15.0; // Damage
+          _health -= 15.0;
+          HapticFeedback.heavyImpact();
+
+          // Floating hurt text
+          final msg = _hitMessages[_random.nextInt(_hitMessages.length)];
+          _addFloatingText(_wormBody[0], msg, Colors.redAccent);
+
           if (_health <= 0) {
             _health = 0;
             _gameOver();
@@ -191,261 +267,169 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
           continue;
         }
 
-        // Remove salt if out of bounds
-        if (s.position.dx < -200 || s.position.dx > _screenSize.width + 200 || 
-            s.position.dy < -200 || s.position.dy > _screenSize.height + 200) {
+        if (s.position.dx < -150 ||
+            s.position.dx > _screenSize.width + 150 ||
+            s.position.dy < -150 ||
+            s.position.dy > _screenSize.height + 150) {
           _salts.removeAt(i);
         }
       }
 
-      // 7. Update Items and Check Collisions (Head only for items)
+      // Update items
       for (int i = _items.length - 1; i >= 0; i--) {
-        HealthItem item = _items[i];
+        final item = _items[i];
         item.lifeTime += dt;
 
-        if ((item.position - _wormBody[0]).distance < _wormRadius + item.radius) {
+        if ((_wormBody[0] - item.position).distance <
+            _wormRadius + item.radius) {
           _items.removeAt(i);
-          _health += 25.0;
-          if (_health > 100) _health = 100;
+          _health = (_health + 25).clamp(0, 100);
+          // Speed boost!
+          _wormSpeed += 15;
+          _score += 5;
+          _addFloatingText(
+              _wormBody[0], '🚀 SPEED UP! +5 pts', Colors.greenAccent);
+          HapticFeedback.lightImpact();
           continue;
         }
 
-        if (item.lifeTime > 8.0) { 
-          _items.removeAt(i);
-        }
+        if (item.lifeTime > 8.0) _items.removeAt(i);
+      }
+
+      // Update floating texts
+      for (int i = _floatingTexts.length - 1; i >= 0; i--) {
+        final ft = _floatingTexts[i];
+        ft.age += dt;
+        ft.opacity = (1.0 - ft.age / 1.8).clamp(0.0, 1.0);
+        ft.position = ft.position.translate(0, -55 * dt);
+        if (ft.age > 1.8) _floatingTexts.removeAt(i);
       }
     });
   }
 
   void _spawnSalt() {
-    double side = _random.nextDouble();
+    final side = _random.nextDouble();
     Offset spawnPos;
-    
     if (side < 0.25) {
       spawnPos = Offset(-20, _random.nextDouble() * _screenSize.height);
     } else if (side < 0.5) {
-      spawnPos = Offset(_screenSize.width + 20, _random.nextDouble() * _screenSize.height);
+      spawnPos =
+          Offset(_screenSize.width + 20, _random.nextDouble() * _screenSize.height);
     } else if (side < 0.75) {
       spawnPos = Offset(_random.nextDouble() * _screenSize.width, -20);
     } else {
-      spawnPos = Offset(_random.nextDouble() * _screenSize.width, _screenSize.height + 20);
+      spawnPos = Offset(
+          _random.nextDouble() * _screenSize.width, _screenSize.height + 20);
     }
 
-    // Aim at the worm's HEAD
-    Offset direction = _wormBody[0] - spawnPos;
-    double dist = direction.distance;
-    if (dist != 0) {
-      direction = direction / dist;
-    }
-    
-    double speed = 150.0 + (_spawnRate * 15);
-    
+    final dir = (_wormBody[0] - spawnPos);
+    final dist = dir.distance;
+    final normDir = dist > 0 ? dir / dist : const Offset(1, 0);
+    final speed = 150.0 + _spawnRate * 15;
+
     _salts.add(Salt(
-      position: spawnPos,
-      velocity: direction * speed,
-      radius: 8.0,
-    ));
+        position: spawnPos, velocity: normDir * speed, radius: 8.0));
   }
 
   void _spawnItem() {
     _items.add(HealthItem(
       position: Offset(
-        50 + _random.nextDouble() * (_screenSize.width - 100), 
-        100 + _random.nextDouble() * (_screenSize.height - 300) // Keep away from D-pad
+        50 + _random.nextDouble() * (_screenSize.width - 100),
+        100 + _random.nextDouble() * (_screenSize.height - 200),
       ),
-      radius: 15.0,
+      radius: 16.0,
     ));
   }
 
   @override
   void dispose() {
     _ticker.dispose();
+    _showerController.dispose();
     super.dispose();
   }
 
-  Widget _buildDPadButton(IconData icon, Direction dir) {
-    return GestureDetector(
-      onTapDown: (_) => _setDirection(dir),
-      child: Container(
-        width: 70,
-        height: 70,
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.2),
-          shape: BoxShape.circle,
-          border: Border.all(color: Colors.white54, width: 2),
-        ),
-        child: Icon(icon, color: Colors.white, size: 40),
-      ),
-    );
-  }
+  // ─────────────── Build ───────────────
 
   @override
   Widget build(BuildContext context) {
     _screenSize = MediaQuery.of(context).size;
-    
+
     return Scaffold(
       body: Stack(
         children: [
-          // Game Area
-          if (_isPlaying) ...[
-            // Draw Health Items
-            ..._items.map((item) => Positioned(
-              left: item.position.dx - item.radius,
-              top: item.position.dy - item.radius,
-              child: Icon(Icons.local_hospital, color: Colors.greenAccent, size: item.radius * 2),
-            )),
+          // Background grid
+          CustomPaint(
+            size: _screenSize,
+            painter: _DirtPainter(),
+          ),
 
-            // Draw Salts
-            ..._salts.map((s) => Positioned(
-              left: s.position.dx - s.radius,
-              top: s.position.dy - s.radius,
-              child: Container(
-                width: s.radius * 2,
-                height: s.radius * 2,
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(color: Colors.white.withOpacity(0.5), blurRadius: 4, spreadRadius: 2)
-                  ]
-                ),
-              ),
-            )),
+          // ── Reward Screen ──
+          if (_showReward) _buildRewardScreen(),
 
-            // Draw Worm Body (from tail to head so head is on top)
-            for (int i = _wormBody.length - 1; i >= 0; i--)
-              Positioned(
-                left: _wormBody[i].dx - _wormRadius,
-                top: _wormBody[i].dy - _wormRadius,
-                child: Container(
-                  width: _wormRadius * 2,
-                  height: _wormRadius * 2,
-                  decoration: BoxDecoration(
-                    color: i == 0 ? Colors.pink[300] : Colors.pink[400], // Head is lighter
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.pink[800]!, width: i == 0 ? 3 : 1),
-                  ),
-                  child: i == 0 
-                    ? const Center(child: Icon(Icons.sentiment_neutral, size: 20, color: Colors.black45))
-                    : null,
-                ),
-              ),
+          // ── Game Over Screen ──
+          if (!_isPlaying && !_showReward) _buildMenuScreen(),
 
-            // Health Bar & Info
-            Positioned(
-              top: 40,
-              left: 20,
-              right: 20,
-              child: Column(
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text('HEALTH: ${_health.toInt()}%', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
-                      Text('TIME: ${_lastTick.inSeconds}s', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(10),
-                    child: LinearProgressIndicator(
-                      value: _health / 100.0,
-                      backgroundColor: Colors.red[900],
-                      color: Colors.greenAccent,
-                      minHeight: 18,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            // D-Pad Controls
-            Positioned(
-              bottom: 40,
-              left: 0,
-              right: 0,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _buildDPadButton(Icons.keyboard_arrow_up, Direction.up),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      _buildDPadButton(Icons.keyboard_arrow_left, Direction.left),
-                      const SizedBox(width: 80),
-                      _buildDPadButton(Icons.keyboard_arrow_right, Direction.right),
-                    ],
-                  ),
-                  _buildDPadButton(Icons.keyboard_arrow_down, Direction.down),
-                ],
-              ),
-            )
-          ],
-          
-          // Main Menu / Game Over
-          if (!_isPlaying)
-            Center(
-              child: Container(
-                margin: const EdgeInsets.symmetric(horizontal: 20),
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: Colors.black87,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.white24, width: 2)
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
+          // ── Gameplay ──
+          if (_isPlaying)
+            GestureDetector(
+              onPanUpdate: (d) => setState(() => _dragTarget = d.localPosition),
+              onPanStart: (d) => setState(() => _dragTarget = d.localPosition),
+              behavior: HitTestBehavior.opaque,
+              child: SizedBox.expand(
+                child: Stack(
                   children: [
-                    Text(
-                      _isGameOver ? 'GAME OVER' : 'WORM vs SALT',
-                      style: TextStyle(
-                        fontSize: 32, 
-                        fontWeight: FontWeight.bold,
-                        color: _isGameOver ? Colors.redAccent : Colors.white
+                    // Health items
+                    ..._items.map((item) => Positioned(
+                          left: item.position.dx - item.radius,
+                          top: item.position.dy - item.radius,
+                          child: _HealthItemWidget(radius: item.radius),
+                        )),
+
+                    // Salts
+                    ..._salts.map((s) => Positioned(
+                          left: s.position.dx - s.radius,
+                          top: s.position.dy - s.radius,
+                          child: _SaltWidget(radius: s.radius),
+                        )),
+
+                    // Worm segments (tail → head)
+                    for (int i = _wormBody.length - 1; i >= 0; i--)
+                      Positioned(
+                        left: _wormBody[i].dx - _wormRadius,
+                        top: _wormBody[i].dy - _wormRadius,
+                        child: _WormSegment(
+                          radius: _wormRadius,
+                          isHead: i == 0,
+                          segmentIndex: i,
+                          totalSegments: _wormBody.length,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 20),
-                    if (_isGameOver) ...[
-                      const Text('You survived for:', style: TextStyle(fontSize: 16, color: Colors.white70)),
-                      Text('${_lastTick.inSeconds} seconds', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.greenAccent)),
-                      const SizedBox(height: 20),
-                    ],
-                    
-                    // Detailed Instructions
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.white10,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: const Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('HOW TO PLAY:', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.yellowAccent)),
-                          SizedBox(height: 8),
-                          Text('🐛 You are a worm. You will constantly move forward.', style: TextStyle(fontSize: 14, color: Colors.white)),
-                          SizedBox(height: 4),
-                          Text('🎮 Use the D-PAD buttons to change your direction.', style: TextStyle(fontSize: 14, color: Colors.white)),
-                          SizedBox(height: 4),
-                          Text('🧂 AVOID THE SALT! White salt particles will constantly shoot at you. If they hit ANY part of your long body, you lose health.', style: TextStyle(fontSize: 14, color: Colors.white)),
-                          SizedBox(height: 4),
-                          Text('💚 Collect Health Kits (green crosses) to restore health.', style: TextStyle(fontSize: 14, color: Colors.white)),
-                          SizedBox(height: 4),
-                          Text('⏱️ The game gets harder and faster every 15 seconds!', style: TextStyle(fontSize: 14, color: Colors.orangeAccent)),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 30),
-                    
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
-                        backgroundColor: Colors.green,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                      ),
-                      onPressed: _startGame,
-                      child: Text(_isGameOver ? 'TRY AGAIN' : 'START GAME', style: const TextStyle(fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold)),
-                    ),
+
+                    // Floating texts
+                    ..._floatingTexts.map((ft) => Positioned(
+                          left: ft.position.dx,
+                          top: ft.position.dy,
+                          child: Opacity(
+                            opacity: ft.opacity,
+                            child: Text(
+                              ft.text,
+                              style: TextStyle(
+                                color: ft.color,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                                shadows: const [
+                                  Shadow(
+                                      color: Colors.black,
+                                      blurRadius: 6,
+                                      offset: Offset(1, 1)),
+                                ],
+                              ),
+                            ),
+                          ),
+                        )),
+
+                    // HUD
+                    _buildHUD(),
                   ],
                 ),
               ),
@@ -454,20 +438,460 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
       ),
     );
   }
+
+  Widget _buildHUD() {
+    return Positioned(
+      top: 40,
+      left: 16,
+      right: 16,
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              _HudBadge(
+                  icon: Icons.favorite, label: '${_health.toInt()}%',
+                  color: Colors.pinkAccent),
+              _HudBadge(
+                  icon: Icons.star, label: '$_score / 100',
+                  color: Colors.amberAccent),
+              _HudBadge(
+                  icon: Icons.speed,
+                  label: '${_wormSpeed.toInt()} px/s',
+                  color: Colors.cyanAccent),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: LinearProgressIndicator(
+              value: _health / 100.0,
+              backgroundColor: Colors.red[900],
+              valueColor: AlwaysStoppedAnimation(
+                  _health > 50 ? Colors.greenAccent : Colors.orangeAccent),
+              minHeight: 14,
+            ),
+          ),
+          const SizedBox(height: 4),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: LinearProgressIndicator(
+              value: _score / 100.0,
+              backgroundColor: Colors.grey[800],
+              valueColor:
+                  const AlwaysStoppedAnimation(Colors.amberAccent),
+              minHeight: 8,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMenuScreen() {
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 24),
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          color: Colors.black87,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Colors.brown[400]!, width: 2),
+          boxShadow: [
+            BoxShadow(
+                color: Colors.brown.withOpacity(0.4),
+                blurRadius: 20,
+                spreadRadius: 5),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              _isGameOver ? '💀 GAME OVER' : '🐛 WORM vs SALT 🧂',
+              style: TextStyle(
+                fontSize: 28,
+                fontWeight: FontWeight.bold,
+                color: _isGameOver ? Colors.redAccent : Colors.white,
+              ),
+            ),
+            const SizedBox(height: 16),
+            if (_isGameOver) ...[
+              Text('Final Score: $_score',
+                  style: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.amberAccent)),
+              const SizedBox(height: 12),
+            ],
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white10,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('📖 HOW TO PLAY',
+                      style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.yellowAccent)),
+                  SizedBox(height: 8),
+                  Text(
+                    '👆 DRAG your finger to guide the worm.',
+                    style: TextStyle(color: Colors.white, fontSize: 13),
+                  ),
+                  SizedBox(height: 5),
+                  Text(
+                    '🧂 AVOID the white salt particles — they constantly chase you and target ANY part of your body. The longer your worm, the harder to dodge!',
+                    style: TextStyle(color: Colors.white, fontSize: 13),
+                  ),
+                  SizedBox(height: 5),
+                  Text(
+                    '💚 COLLECT green health kits to restore HP AND get a speed boost — use it to outrun the salt!',
+                    style: TextStyle(color: Colors.greenAccent, fontSize: 13),
+                  ),
+                  SizedBox(height: 5),
+                  Text(
+                    '⭐ Score 1 point per second. Collect kits for +5 bonus. Reach 100 to unlock a SECRET reward! 🎉',
+                    style: TextStyle(color: Colors.amberAccent, fontSize: 13),
+                  ),
+                  SizedBox(height: 5),
+                  Text(
+                    '⚡ Every 15 seconds the salts multiply and move FASTER. Stay sharp!',
+                    style: TextStyle(color: Colors.orangeAccent, fontSize: 13),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 44, vertical: 14),
+                backgroundColor: Colors.green[700],
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(30)),
+                elevation: 8,
+              ),
+              onPressed: _startGame,
+              child: Text(
+                _isGameOver ? '🔄 TRY AGAIN' : '🎮 START GAME',
+                style: const TextStyle(
+                    fontSize: 20,
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRewardScreen() {
+    return Container(
+      color: Colors.black.withOpacity(0.85),
+      child: SafeArea(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text(
+              '🎊 SCORE 100! 🎊',
+              style: TextStyle(
+                  fontSize: 36,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.amberAccent),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'The worm earned a shower! 🚿',
+              style: TextStyle(fontSize: 20, color: Colors.white70),
+            ),
+            const SizedBox(height: 30),
+            // Shower scene
+            AnimatedBuilder(
+              animation: _dropAnimation,
+              builder: (context, _) {
+                return CustomPaint(
+                  size: const Size(260, 300),
+                  painter: _ShowerPainter(_dropAnimation.value),
+                );
+              },
+            ),
+            const SizedBox(height: 30),
+            const Text(
+              '"No more salt... finally!" 😭✨',
+              style: TextStyle(
+                  fontSize: 18,
+                  fontStyle: FontStyle.italic,
+                  color: Colors.cyanAccent),
+            ),
+            const SizedBox(height: 30),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 40, vertical: 14),
+                backgroundColor: Colors.blueAccent,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(30)),
+              ),
+              onPressed: _startGame,
+              child: const Text('🎮 PLAY AGAIN',
+                  style: TextStyle(
+                      fontSize: 18,
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
-class Salt {
-  Offset position;
-  Offset velocity;
-  final double radius;
+// ─────────────── Painters & Widgets ───────────────
 
-  Salt({required this.position, required this.velocity, required this.radius});
+class _DirtPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = const Color(0xFF1A0A00);
+    canvas.drawRect(Offset.zero & size, paint);
+    // Subtle dirt texture dots
+    final dotPaint = Paint()..color = const Color(0xFF2A1500);
+    final r = Random(42);
+    for (int i = 0; i < 120; i++) {
+      canvas.drawCircle(
+        Offset(r.nextDouble() * size.width, r.nextDouble() * size.height),
+        r.nextDouble() * 3 + 1,
+        dotPaint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_) => false;
 }
 
-class HealthItem {
-  Offset position;
+class _WormSegment extends StatelessWidget {
   final double radius;
-  double lifeTime = 0;
+  final bool isHead;
+  final int segmentIndex;
+  final int totalSegments;
+  const _WormSegment(
+      {required this.radius,
+      required this.isHead,
+      required this.segmentIndex,
+      required this.totalSegments});
 
-  HealthItem({required this.position, required this.radius});
+  @override
+  Widget build(BuildContext context) {
+    final t = segmentIndex / totalSegments;
+    final color =
+        Color.lerp(const Color(0xFFE91E8C), const Color(0xFFAD1457), t)!;
+
+    return Container(
+      width: radius * 2,
+      height: radius * 2,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        border: Border.all(
+            color: isHead ? Colors.white54 : Colors.pink[900]!,
+            width: isHead ? 2.5 : 1),
+        boxShadow: isHead
+            ? [
+                BoxShadow(
+                    color: Colors.pinkAccent.withOpacity(0.5),
+                    blurRadius: 10,
+                    spreadRadius: 2)
+              ]
+            : [],
+      ),
+      child: isHead
+          ? const Center(
+              child: Text('🐛', style: TextStyle(fontSize: 16)),
+            )
+          : null,
+    );
+  }
+}
+
+class _SaltWidget extends StatelessWidget {
+  final double radius;
+  const _SaltWidget({required this.radius});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: radius * 2,
+      height: radius * 2,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        shape: BoxShape.circle,
+        boxShadow: [
+          BoxShadow(
+              color: Colors.white.withOpacity(0.6),
+              blurRadius: 6,
+              spreadRadius: 2),
+        ],
+      ),
+      child: const Center(
+        child: Text('🧂', style: TextStyle(fontSize: 8)),
+      ),
+    );
+  }
+}
+
+class _HealthItemWidget extends StatelessWidget {
+  final double radius;
+  const _HealthItemWidget({required this.radius});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: radius * 2,
+      height: radius * 2,
+      decoration: BoxDecoration(
+        color: Colors.green[800],
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.greenAccent, width: 2),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.greenAccent.withOpacity(0.5),
+              blurRadius: 12,
+              spreadRadius: 3),
+        ],
+      ),
+      child: const Center(
+        child: Text('💊', style: TextStyle(fontSize: 14)),
+      ),
+    );
+  }
+}
+
+class _HudBadge extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  const _HudBadge(
+      {required this.icon, required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: Colors.black54,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withOpacity(0.5), width: 1),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color, size: 16),
+          const SizedBox(width: 5),
+          Text(label,
+              style: TextStyle(
+                  color: color, fontSize: 13, fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────── Shower Reward Painter ───────────────
+
+class _ShowerPainter extends CustomPainter {
+  final double t;
+  _ShowerPainter(this.t);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final Random rng = Random(42);
+
+    // Background circle
+    canvas.drawCircle(
+      Offset(cx, size.height * 0.55),
+      100,
+      Paint()
+        ..color = const Color(0xFF1A3A6B)
+        ..style = PaintingStyle.fill,
+    );
+
+    // Shower head
+    final showerPaint = Paint()
+      ..color = Colors.grey[400]!
+      ..strokeWidth = 5
+      ..style = PaintingStyle.stroke;
+    canvas.drawLine(
+        Offset(cx - 30, 20), Offset(cx + 30, 20), showerPaint);
+    canvas.drawLine(Offset(cx, 20), Offset(cx, 50), showerPaint);
+
+    // Shower head nozzle plate
+    canvas.drawRect(
+      Rect.fromCenter(
+          center: Offset(cx, 55), width: 60, height: 12),
+      Paint()..color = Colors.grey[300]!,
+    );
+
+    // Water drops
+    final dropPaint = Paint()
+      ..color = Colors.lightBlueAccent.withOpacity(0.8)
+      ..style = PaintingStyle.fill;
+
+    for (int i = 0; i < 14; i++) {
+      final offsetX = (rng.nextDouble() - 0.5) * 55;
+      final phase = rng.nextDouble();
+      final drop = ((t + phase) % 1.0);
+      final dy = 65 + drop * 150;
+      canvas.drawOval(
+        Rect.fromCenter(
+            center: Offset(cx + offsetX, dy), width: 5, height: 9),
+        dropPaint,
+      );
+    }
+
+    // Worm body (wiggling)
+    _drawWorm(canvas, Offset(cx, size.height * 0.65), t);
+
+    // Steam/bubbles
+    final bubblePaint = Paint()
+      ..color = Colors.white.withOpacity(0.2)
+      ..style = PaintingStyle.fill;
+    for (int i = 0; i < 6; i++) {
+      final bx = cx + (rng.nextDouble() - 0.5) * 80;
+      final by =
+          size.height * 0.55 - 30 - ((t * 40 + i * 18) % 60);
+      canvas.drawCircle(Offset(bx, by), rng.nextDouble() * 5 + 3, bubblePaint);
+    }
+
+    // Happy face text
+    const textStyle = TextStyle(fontSize: 30);
+    final tp = TextPainter(
+      text: const TextSpan(text: '😄', style: textStyle),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, Offset(cx - 15, size.height * 0.49));
+  }
+
+  void _drawWorm(Canvas canvas, Offset center, double t) {
+    final segments = 10;
+    final paint = Paint()
+      ..color = const Color(0xFFE91E8C)
+      ..style = PaintingStyle.fill;
+
+    for (int i = 0; i < segments; i++) {
+      final angle = (i / segments) * pi + sin(t * pi * 2 + i * 0.5) * 0.4;
+      final x = center.dx + cos(angle) * i * 8;
+      final y = center.dy + sin(angle) * i * 4 + sin(t * 4 + i) * 5;
+      canvas.drawCircle(Offset(x, y), 10.0 - i * 0.5, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_ShowerPainter old) => old.t != t;
 }
