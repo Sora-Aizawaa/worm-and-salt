@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:audioplayers/audioplayers.dart';
 
 void main() {
   runApp(const WormVsSaltGame());
@@ -65,7 +66,11 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
   void initState() {
     super.initState();
     _ticker = createTicker(_tick);
+    _audioPlayer = AudioPlayer();
   }
+
+  // Audio player instance
+  late AudioPlayer _audioPlayer;
 
   void _startGame() {
     setState(() {
@@ -179,6 +184,8 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
         }
 
         if (hitWorm) {
+          // Play hit sound
+          _audioPlayer.play(AssetSource('assets/sounds/ugh.mp3'));
           _salts.removeAt(i);
           _health -= 15.0; // Damage
           if (_health <= 0) {
