@@ -36,12 +36,21 @@ jobs:
 
       - name: Setup Keystore
         run: |
-          cp release-keystore.p12 android/app/
+          mkdir -p android/app
+          if [ ! -f release-keystore.jks ]; then
+            keytool -genkey -v -keystore release-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias my-key-alias -dname "CN=Sora Aizawa, OU=Development, O=Sora Aizawa, L=Jakarta, S=Jakarta, C=ID" -storepass password123 -keypass password123
+            git config --global user.name "github-actions[bot]"
+            git config --global user.email "github-actions[bot]@users.noreply.github.com"
+            git add release-keystore.jks
+            git commit -m "Auto-generate real JKS release keystore"
+            git push origin HEAD:main
+          fi
+          cp release-keystore.jks android/app/
           cat > android/key.properties <<EOF
           storePassword=password123
           keyPassword=password123
           keyAlias=my-key-alias
-          storeFile=release-keystore.p12
+          storeFile=release-keystore.jks
           EOF
 
       # `flutter create` always regenerates android/app/build.gradle.kts from its
