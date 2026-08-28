@@ -34,17 +34,14 @@ jobs:
           mv temp_app/android ./android
           rm -rf temp_app
 
-      - name: Decode Keystore
+      - name: Setup Keystore
         run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/my-release-key.jks
-
-      - name: Create key.properties
-        run: |
+          cp release-keystore.p12 android/app/
           cat > android/key.properties <<EOF
-          storePassword=${{ secrets.STORE_PASSWORD }}
-          keyPassword=${{ secrets.KEY_PASSWORD }}
-          keyAlias=${{ secrets.KEY_ALIAS }}
-          storeFile=my-release-key.jks
+          storePassword=password123
+          keyPassword=password123
+          keyAlias=my-key-alias
+          storeFile=release-keystore.p12
           EOF
 
       # `flutter create` always regenerates android/app/build.gradle.kts from its
